@@ -95,13 +95,13 @@ class BudgetAgent:
         expense = sum(t["amount"] for t in transactions if t["type"] == "expense")
         balance = income - expense
 
-        # safer single-line formatted string
         summary = (
-            f"📅 Weekly Budget Summary —\n"
-            f"Total Income: ₦{income} | "
-            f"Total Expenses: ₦{expense} | "
-            f"Balance: ₦{balance} | "
-            f"Keep up the good work! 💪"
-        )
+        "**📅 Weekly Budget Summary**\n"
+        f"- **Income:** ₦{income}\n"
+        f"- **Expenses:** ₦{expense}\n"
+        f"- **Balance:** ₦{balance}\n"
+        "Keep up the good work! 💪"
+    )
+
 
         return summary
