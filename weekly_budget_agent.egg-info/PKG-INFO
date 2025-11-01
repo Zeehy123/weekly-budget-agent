@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: weekly-budget-agent
+Version: 0.1.0
+Summary: A Weekly Budget Summary Agent compatible with Telex A2A
+Requires-Python: >=3.13
+Requires-Dist: fastapi[all]>=0.115.12
+Requires-Dist: httpx>=0.28.1
+Requires-Dist: pydantic-ai>=0.4.2
+Requires-Dist: python-dotenv>=1.1.0
+Requires-Dist: schedule>=1.2.2

@@ -1,0 +1,16 @@
+[project]
+name = "weekly-budget-agent"
+version = "0.1.0"
+description = "A Weekly Budget Summary Agent compatible with Telex A2A"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi[all]>=0.115.12",
+    "httpx>=0.28.1",
+    "pydantic-ai>=0.4.2",
+    "python-dotenv>=1.1.0",
+    "schedule>=1.2.2",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"

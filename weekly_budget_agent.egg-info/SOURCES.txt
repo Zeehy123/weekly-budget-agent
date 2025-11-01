@@ -1,0 +1,6 @@
+pyproject.toml
+weekly_budget_agent.egg-info/PKG-INFO
+weekly_budget_agent.egg-info/SOURCES.txt
+weekly_budget_agent.egg-info/dependency_links.txt
+weekly_budget_agent.egg-info/requires.txt
+weekly_budget_agent.egg-info/top_level.txt
