@@ -27,6 +27,7 @@ app = FastAPI(
 
 @app.post("/a2a/budget")
 async def a2a_endpoint(request: Request):
+    print("A2a endpoint hit")
     try:
         body = await request.json()
         rpc_request = JSONRPCRequest(**body)
