@@ -15,7 +15,7 @@ class BudgetAgent:
         redis_url = os.getenv("REDIS_URL")
         if not redis_url:
             raise ValueError("Missing REDIS_URL in environment variables.")
-        self.store = SessionStore(redis_url)
+        self.store = SessionStore()
 
     async def send_webhook_notification(self, webhook_url: str, result: TaskResult, auth: Optional[dict] = None):
         headers = {"Content-Type": "application/json"}
