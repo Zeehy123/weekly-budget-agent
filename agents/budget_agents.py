@@ -54,6 +54,7 @@ class BudgetAgent:
             response_text = self._generate_weekly_summary(user_id)
 
         response_message = A2AMessage(
+            kind="message",
             role="agent",
             parts=[MessagePart(kind="text", text=response_text)],
             taskId=task_id

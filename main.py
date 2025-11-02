@@ -44,7 +44,7 @@ async def a2a_endpoint(request: Request):
     except Exception as e:
         return JSONResponse(
             status_code=500,
-            content={
+            content={ 
                 "jsonrpc": "2.0",
                 "error": {"code": -32603, "message": "Internal error", "data": str(e)},
             },
