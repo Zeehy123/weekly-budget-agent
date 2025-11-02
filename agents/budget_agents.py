@@ -85,24 +85,29 @@ class BudgetAgent:
         return int(match.group()) if match else 0
 
     def _generate_weekly_summary(self, user_id):
+        print(f"🟡 DEBUG: Generating summary for user {user_id}")
         user_data = self.data["users"].get(user_id, {"transactions": []})
         week_ago = datetime.utcnow() - timedelta(days=7)
         transactions = [
             t for t in user_data["transactions"]
             if datetime.fromisoformat(t["date"]) > week_ago
         ]
+        print(f"🟡 DEBUG: Transactions found = {transactions}") 
+        if not transactions:
+            print("🔴 DEBUG: No transactions found for this week.") 
+            return "No transactions recorded this week yet."
 
         income = sum(t["amount"] for t in transactions if t["type"] == "income")
         expense = sum(t["amount"] for t in transactions if t["type"] == "expense")
         balance = income - expense
 
         summary = (
-        "**📅 Weekly Budget Summary**\n"
-        f"- **Income:** ₦{income}\n"
-        f"- **Expenses:** ₦{expense}\n"
-        f"- **Balance:** ₦{balance}\n"
-        "Keep up the good work! 💪"
-    )
-
-
+            "📊 **Your Weekly Budget Summary**\n\n"
+            f"💰 **Total Income:** ₦{income}\n"
+            f"💸 **Total Expenses:** ₦{expense}\n"
+            f"🧾 **Balance:** ₦{balance}\n\n"
+            "Keep up the good work! 💪"
+        )
+        print(f"✅ DEBUG: Summary generated:\n{summary}")
         return summary
+
