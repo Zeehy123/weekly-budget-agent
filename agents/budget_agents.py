@@ -33,12 +33,17 @@ class BudgetAgent:
             if part.kind == "text":
                 user_text = part.text.lower().strip()
 
+        # Try to use sender ID from message metadata (Telex sends this)
+        user_id = None
+        if message.metadata and "sender" in message.metadata:
+            user_id = message.metadata["sender"].get("id") or context_id
+        else:
+            user_id = context_id
+
         response_text = "I didn’t understand that. You can say things like:\n" \
                         "- 'Add expense 500 for groceries'\n" \
                         "- 'Add income 2000 salary'\n" \
                         "- 'Show summary'"
-
-        user_id = context_id  # simple assumption
 
         if "add expense" in user_text:
             amount = self._extract_number(user_text)
@@ -67,6 +72,7 @@ class BudgetAgent:
             artifacts=[],
             history=messages + [response_message]
         )
+
 
     def _add_transaction(self, user_id, type_, amount):
         if user_id not in self.data["users"]:
