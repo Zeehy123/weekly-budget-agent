@@ -24,6 +24,9 @@ class BudgetAgent:
             json.dump(self.data, f, indent=4)
 
     async def process_messages(self, messages, context_id=None, task_id=None, config=None):
+        print("📩 Received message dump:")
+        print(messages[-1].model_dump())
+
         context_id = context_id or str(uuid4())
         task_id = task_id or str(uuid4())
 
