@@ -61,20 +61,28 @@ def flatten_parts(parts):
         elif isinstance(part, dict):
             flat.append(part)
         else:
-            continue  # ignore invalid entries
+            continue
     return flat
 
 
-# Recursively convert any object to dict
-def to_dict(obj):
-    if hasattr(obj, "dict"):
-        return obj.dict()
-    elif isinstance(obj, list):
-        return [to_dict(i) for i in obj]
-    elif isinstance(obj, dict):
-        return {k: to_dict(v) for k, v in obj.items()}
-    else:
-        return obj
+# Serialize A2AMessage / MessagePart to JSON-safe dict
+def serialize_message(message):
+    return {
+        "kind": getattr(message, "kind", "message"),
+        "role": getattr(message, "role", "agent"),
+        "messageId": getattr(message, "messageId", str(uuid.uuid4())),
+        "taskId": getattr(message, "taskId", str(uuid.uuid4())),
+        "parts": [
+            {
+                "kind": getattr(part, "kind", "text"),
+                "text": getattr(part, "text", ""),
+                "data": getattr(part, "data", {}) or {},
+                "file_url": getattr(part, "file_url", None),
+            }
+            for part in getattr(message, "parts", [])
+        ],
+        "metadata": getattr(message, "metadata", {}) or {},
+    }
 
 
 @app.post("/a2a/budget")
@@ -144,7 +152,7 @@ async def a2a_endpoint(request: Request):
         elif isinstance(result_obj, dict):
             summary_text = result_obj.get("summary") or result_obj.get("message") or summary_text
 
-        # Build JSON-RPC response with full dict conversion
+        # Build JSON-RPC response with full serialization
         task_uuid = task_id or str(uuid.uuid4())
         timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -154,7 +162,7 @@ async def a2a_endpoint(request: Request):
             "status": {
                 "state": "completed",
                 "timestamp": timestamp,
-                "message": result_obj.status.message if hasattr(result_obj.status, "message") else {
+                "message": serialize_message(result_obj.status.message) if hasattr(result_obj.status, "message") else {
                     "messageId": str(uuid.uuid4()),
                     "role": "agent",
                     "parts": [{"kind": "text", "text": summary_text}],
@@ -163,17 +171,18 @@ async def a2a_endpoint(request: Request):
                 },
             },
             "artifacts": [],
-            "history": messages + [result_obj.status.message],
+            "history": [serialize_message(m) for m in messages] + [serialize_message(result_obj.status.message)],
             "kind": "task",
         }
 
         final_response = {
             "jsonrpc": "2.0",
             "id": rpc_id,
-            "result": to_dict(response_result),
+            "result": response_result,
             "error": None,
         }
 
+        print("📤 Sending final Telex JSON-RPC response")
         return JSONResponse(content=final_response)
 
     except Exception as e:
