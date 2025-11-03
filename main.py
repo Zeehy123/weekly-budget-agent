@@ -39,17 +39,36 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Weekly Budget Summary Agent", version="1.0.0", lifespan=lifespan)
 
-# Flatten nested parts
-def flatten_parts(parts):
-    flat = []
+# -------------------------------
+# Normalize incoming message parts
+# -------------------------------
+def normalize_parts(parts):
+    normalized = []
     for part in parts:
-        if isinstance(part, list):
-            flat.extend(flatten_parts(part))
-        elif isinstance(part, dict):
-            flat.append(part)
-    return flat
+        if isinstance(part, dict):
+            # Ensure `data` is always a dictionary
+            data = part.get("data", {})
+            if not isinstance(data, dict):
+                data = {}
 
-# Serialize messages to Telex-safe JSON
+            # Recursively normalize nested parts
+            if "parts" in part and isinstance(part["parts"], list):
+                part["parts"] = normalize_parts(part["parts"])
+
+            normalized.append({
+                "kind": part.get("kind", "text"),
+                "text": part.get("text", ""),
+                "data": data,
+                "file_url": part.get("file_url", None),
+            })
+        elif isinstance(part, list):
+            # Flatten nested lists recursively
+            normalized.extend(normalize_parts(part))
+    return normalized
+
+# -------------------------------
+# Serialize outgoing messages
+# -------------------------------
 def serialize_message(message: A2AMessage):
     return {
         "kind": getattr(message, "kind", "message"),
@@ -68,6 +87,9 @@ def serialize_message(message: A2AMessage):
         "metadata": getattr(message, "metadata", {}) or {}
     }
 
+# -------------------------------
+# Budget endpoint
+# -------------------------------
 @app.post("/a2a/budget")
 async def a2a_endpoint(request: Request):
     try:
@@ -78,19 +100,25 @@ async def a2a_endpoint(request: Request):
             content=create_error_response(None, A2AErrorCode.PARSE_ERROR, "Invalid JSON", {"detail": str(e)})
         )
 
-    # Normalize input
+    # -------------------------------
+    # Normalize incoming messages
+    # -------------------------------
     try:
         if "params" in body:
             params = body["params"]
             if "message" in params and "messages" not in params:
                 params["messages"] = [params["message"]]
+
             if "messages" in params:
                 for msg in params["messages"]:
-                    if "parts" in msg and isinstance(msg["parts"], list):
-                        msg["parts"] = flatten_parts(msg["parts"])
+                    if "parts" in msg:
+                        msg["parts"] = normalize_parts(msg["parts"])
     except Exception as e:
         print("⚠️ Normalization warning:", e)
 
+    # -------------------------------
+    # Validate JSON-RPC
+    # -------------------------------
     try:
         rpc_request = JSONRPCRequest(**body)
     except Exception as e:
@@ -113,12 +141,13 @@ async def a2a_endpoint(request: Request):
         print(f"🧭 Context ID: {context_id}")
         print(f"🪶 Messages: {messages}")
 
-        # Process via BudgetAgent
+        # Process messages via BudgetAgent
         result_obj = await budget_agent.process_messages(messages, context_id=context_id, task_id=task_id, config=config)
 
         task_uuid = task_id or str(uuid.uuid4())
         timestamp = datetime.now(timezone.utc).isoformat()
 
+        # Build Telex-safe response
         response_result = {
             "id": task_uuid,
             "contextId": context_id,
@@ -132,6 +161,7 @@ async def a2a_endpoint(request: Request):
 
         print("📤 Sending final Telex JSON-RPC response:")
         print(json.dumps(final_response, indent=2))
+
         return JSONResponse(content=final_response)
 
     except Exception as e:
@@ -141,9 +171,13 @@ async def a2a_endpoint(request: Request):
             content=create_error_response(rpc_id, A2AErrorCode.INTERNAL_ERROR, "Internal error", {"detail": str(e)})
         )
 
+# -------------------------------
+# Health endpoint
+# -------------------------------
 @app.get("/health")
 async def health():
     return {"status": "healthy", "agent": "weekly_budget"}
+
 
 if __name__ == "__main__":
     import uvicorn
