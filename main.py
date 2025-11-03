@@ -1,4 +1,3 @@
-# main.py
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
@@ -26,7 +25,6 @@ class A2AErrorCode(Enum):
 
 
 def create_error_response(request_id: str | None, code: A2AErrorCode, message: str, data=None):
-    """Standardized JSON-RPC error response."""
     return {
         "jsonrpc": "2.0",
         "id": request_id,
@@ -53,6 +51,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
 @app.post("/a2a/budget")
 async def a2a_endpoint(request: Request):
     print("✅ /a2a/budget endpoint hit")
@@ -61,98 +60,61 @@ async def a2a_endpoint(request: Request):
     try:
         body = await request.json()
     except Exception as e:
-        print("❌ JSON parse error:", e)
         return JSONResponse(
             status_code=400,
-            content=create_error_response(
-                None, A2AErrorCode.PARSE_ERROR, "Invalid JSON", {"detail": str(e)}
-            ),
+            content=create_error_response(None, A2AErrorCode.PARSE_ERROR, "Invalid JSON", {"detail": str(e)}),
         )
 
-    # 🩹 Normalize Telex input format before validation
+    # Normalize Telex input
     try:
         if "params" in body:
             params = body["params"]
 
-            # Flatten nested 'parts' (Telex sometimes sends [[{kind:'text', ...}]])
-            if "message" in params and "parts" in params["message"]:
-                parts = params["message"]["parts"]
-                if isinstance(parts, list) and len(parts) == 1 and isinstance(parts[0], list):
-                    print("🩹 Flattening nested message.parts")
-                    params["message"]["parts"] = parts[0]
+            # Flatten nested parts
+            if "messages" in params:
+                for msg in params["messages"]:
+                    if "parts" in msg and isinstance(msg["parts"], list):
+                        for i, part in enumerate(msg["parts"]):
+                            if isinstance(part, list) and len(part) == 1 and isinstance(part[0], dict):
+                                msg["parts"][i] = part[0]
 
-            # Handle when 'messages' is missing but 'message' exists
-            if "method" in body and body["method"] == "execute":
-                if "messages" not in params and "message" in params:
-                    print("🩹 Converting single 'message' to 'messages' list")
-                    params["messages"] = [params["message"]]
+            # Convert single 'message' to 'messages' list
+            if "message" in params and "messages" not in params:
+                params["messages"] = [params["message"]]
+
     except Exception as e:
         print("⚠️ Normalization warning:", e)
 
-    # Validate JSON-RPC structure
+    # Validate JSON-RPC
     try:
         rpc_request = JSONRPCRequest(**body)
     except Exception as e:
-        print("❌ Request validation failed:", e)
         return JSONResponse(
             status_code=400,
-            content=create_error_response(
-                body.get("id"),
-                A2AErrorCode.INVALID_REQUEST,
-                "Invalid Request",
-                {"details": str(e)},
-            ),
+            content=create_error_response(body.get("id"), A2AErrorCode.INVALID_REQUEST, "Invalid Request", {"details": str(e)}),
         )
 
     rpc_id = body.get("id")
 
     try:
-        # Extract parameters
-        if rpc_request.method == "message/send":
-            params = rpc_request.params
+        params = rpc_request.params
+        messages = getattr(params, "messages", None)
+        if not messages and hasattr(params, "message"):
+            messages = [params.message]
 
-            # Handle both "message" and "messages"
-            if hasattr(params, "message"):
-                messages = [params.message]
-            elif hasattr(params, "messages"):
-                messages = params.messages
-            else:
-                raise ValueError("No valid message(s) field in params")
+        context_id = getattr(params, "contextId", "default-context")
+        task_id = getattr(params, "taskId", str(uuid.uuid4()))
+        config = getattr(params, "configuration", None)
 
-            config = getattr(params, "configuration", None)
-
-            context_id = (
-                getattr(params, "contextId", None)
-                or getattr(params.message, "contextId", None)
-                or (
-                    hasattr(params.message, "metadata")
-                    and getattr(params.message.metadata, "contextId", None)
-                )
-                or "default-context"
-            )
-            task_id = getattr(params.message, "taskId", None)
-
-        else:
-            # fallback for "execute" method
-            params = rpc_request.params
-            messages = getattr(params, "messages", None)
-            config = None
-            context_id = getattr(params, "contextId", "default-context")
-            task_id = getattr(params, "taskId", None)
-
-       
         print(f"🧭 Context ID: {context_id}")
         print(f"🪶 Messages: {messages}")
 
         # Process via BudgetAgent
-        result_obj = await budget_agent.process_messages(
-            messages, context_id=context_id, task_id=task_id, config=config
-        )
+        result_obj = await budget_agent.process_messages(messages, context_id=context_id, task_id=task_id, config=config)
 
-        # 🔍 Extract actual message text from BudgetAgent output
+        # Extract summary text
         summary_text = None
         if hasattr(result_obj, "status") and hasattr(result_obj.status, "message"):
-            # If BudgetAgent returned a JSONRPCResponse-like object
             message = result_obj.status.message
             if message.parts and len(message.parts) > 0:
                 summary_text = getattr(message.parts[0], "text", None)
@@ -161,10 +123,9 @@ async def a2a_endpoint(request: Request):
         else:
             summary_text = str(result_obj)
 
-        if not summary_text:
-            summary_text = "Summary generated successfully."
+        summary_text = summary_text or "Summary generated successfully."
 
-        # 🧱 Build proper Telex JSON-RPC response
+        # Build JSON-RPC response
         task_uuid = task_id or str(uuid.uuid4())
         timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -180,42 +141,30 @@ async def a2a_endpoint(request: Request):
                     "message": {
                         "messageId": str(uuid.uuid4()),
                         "role": "agent",
-                        "parts": [
-                            {
-                                "kind": "text",
-                                "text": summary_text,
-                            }
-                        ],
+                        "parts": [{"kind": "text", "text": summary_text}],
                         "kind": "message",
                         "taskId": task_uuid,
                     },
                 },
                 "artifacts": [],
-                "history": [],
+                "history": messages + [result_obj.status.message],
                 "kind": "task",
             },
             "error": None,
         }
 
-        print("📤 Sending cleaned Telex JSON-RPC response:")
-        print(json.dumps(final_response, indent=2))
-
         return JSONResponse(content=final_response)
 
     except Exception as e:
-        print("🔥 Internal error while processing:", e)
         traceback.print_exc()
         return JSONResponse(
             status_code=500,
-            content=create_error_response(
-                rpc_id, A2AErrorCode.INTERNAL_ERROR, "Internal error", {"detail": str(e)}
-            ),
+            content=create_error_response(rpc_id, A2AErrorCode.INTERNAL_ERROR, "Internal error", {"detail": str(e)}),
         )
 
 
 @app.get("/health")
 async def health():
-    """Health check endpoint."""
     return {"status": "healthy", "agent": "weekly_budget"}
 
 
@@ -223,5 +172,4 @@ if __name__ == "__main__":
     import uvicorn
 
     port = int(os.getenv("PORT", 5004))
-    print(f"🚀 Starting UVicorn on port {port}...")
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
