@@ -53,7 +53,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-
 @app.post("/a2a/budget")
 async def a2a_endpoint(request: Request):
     print("✅ /a2a/budget endpoint hit")
@@ -65,10 +64,32 @@ async def a2a_endpoint(request: Request):
         print("❌ JSON parse error:", e)
         return JSONResponse(
             status_code=400,
-            content=create_error_response(None, A2AErrorCode.PARSE_ERROR, "Invalid JSON", {"detail": str(e)}),
+            content=create_error_response(
+                None, A2AErrorCode.PARSE_ERROR, "Invalid JSON", {"detail": str(e)}
+            ),
         )
 
-    # Validate JSON-RPC shape
+    # 🩹 Normalize Telex input format before validation
+    try:
+        if "params" in body:
+            params = body["params"]
+
+            # Flatten nested 'parts' (Telex sometimes sends [[{kind:'text', ...}]])
+            if "message" in params and "parts" in params["message"]:
+                parts = params["message"]["parts"]
+                if isinstance(parts, list) and len(parts) == 1 and isinstance(parts[0], list):
+                    print("🩹 Flattening nested message.parts")
+                    params["message"]["parts"] = parts[0]
+
+            # Handle when 'messages' is missing but 'message' exists
+            if "method" in body and body["method"] == "execute":
+                if "messages" not in params and "message" in params:
+                    print("🩹 Converting single 'message' to 'messages' list")
+                    params["messages"] = [params["message"]]
+    except Exception as e:
+        print("⚠️ Normalization warning:", e)
+
+    # Validate JSON-RPC structure
     try:
         rpc_request = JSONRPCRequest(**body)
     except Exception as e:
@@ -76,7 +97,10 @@ async def a2a_endpoint(request: Request):
         return JSONResponse(
             status_code=400,
             content=create_error_response(
-                body.get("id"), A2AErrorCode.INVALID_REQUEST, "Invalid Request", {"details": str(e)}
+                body.get("id"),
+                A2AErrorCode.INVALID_REQUEST,
+                "Invalid Request",
+                {"details": str(e)},
             ),
         )
 
@@ -86,16 +110,17 @@ async def a2a_endpoint(request: Request):
         # Extract parameters
         if rpc_request.method == "message/send":
             params = rpc_request.params
+
             # Handle both "message" and "messages"
             if hasattr(params, "message"):
-                    messages = [params.message]
+                messages = [params.message]
             elif hasattr(params, "messages"):
-                    messages = params.messages
+                messages = params.messages
             else:
                 raise ValueError("No valid message(s) field in params")
 
             config = getattr(params, "configuration", None)
-            
+
             context_id = (
                 getattr(params, "contextId", None)
                 or getattr(params.message, "contextId", None)
@@ -106,14 +131,16 @@ async def a2a_endpoint(request: Request):
                 or "default-context"
             )
             task_id = getattr(params.message, "taskId", None)
+
         else:
-            # fallback for execute method
+            # fallback for "execute" method
             params = rpc_request.params
-            messages = params.messages
+            messages = getattr(params, "messages", None)
             config = None
             context_id = getattr(params, "contextId", "default-context")
             task_id = getattr(params, "taskId", None)
 
+       
         print(f"🧭 Context ID: {context_id}")
         print(f"🪶 Messages: {messages}")
 
