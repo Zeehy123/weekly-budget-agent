@@ -94,7 +94,8 @@ async def a2a_endpoint(request: Request):
             else:
                 raise ValueError("No valid message(s) field in params")
 
-                config = getattr(params, "configuration", None)
+            config = getattr(params, "configuration", None)
+            
             context_id = (
                 getattr(params, "contextId", None)
                 or getattr(params.message, "contextId", None)
