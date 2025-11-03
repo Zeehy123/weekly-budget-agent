@@ -182,8 +182,10 @@ async def a2a_endpoint(request: Request):
             "error": None,
         }
 
-        print("📤 Sending final Telex JSON-RPC response")
+        print("📤 Sending final Telex JSON-RPC response:")
+        print(json.dumps(final_response, indent=2))  # <-- Add this line
         return JSONResponse(content=final_response)
+
 
     except Exception as e:
         traceback.print_exc()
