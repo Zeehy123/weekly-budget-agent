@@ -86,9 +86,15 @@ async def a2a_endpoint(request: Request):
         # Extract parameters
         if rpc_request.method == "message/send":
             params = rpc_request.params
-            messages = [params.message]
-            config = params.configuration
+            # Handle both "message" and "messages"
+            if hasattr(params, "message"):
+                    messages = [params.message]
+            elif hasattr(params, "messages"):
+                    messages = params.messages
+            else:
+                raise ValueError("No valid message(s) field in params")
 
+                config = getattr(params, "configuration", None)
             context_id = (
                 getattr(params, "contextId", None)
                 or getattr(params.message, "contextId", None)
