@@ -1,3 +1,4 @@
+# main.py
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
@@ -15,6 +16,9 @@ load_dotenv()
 
 budget_agent: BudgetAgent | None = None
 
+# -------------------------------
+# Error codes
+# -------------------------------
 class A2AErrorCode(Enum):
     PARSE_ERROR = -32700
     INVALID_REQUEST = -32600
@@ -23,12 +27,16 @@ class A2AErrorCode(Enum):
     INTERNAL_ERROR = -32603
 
 def create_error_response(request_id: str | None, code: A2AErrorCode, message: str, data=None):
+    """Standard JSON-RPC error response."""
     return {
         "jsonrpc": "2.0",
         "id": request_id,
         "error": {"code": code.value, "message": message, "data": data or {}}
     }
 
+# -------------------------------
+# App lifespan (initialize agent)
+# -------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global budget_agent
@@ -46,15 +54,11 @@ def normalize_parts(parts):
     normalized = []
     for part in parts:
         if isinstance(part, dict):
-            # Ensure `data` is always a dictionary
             data = part.get("data", {})
             if not isinstance(data, dict):
                 data = {}
-
-            # Recursively normalize nested parts
             if "parts" in part and isinstance(part["parts"], list):
                 part["parts"] = normalize_parts(part["parts"])
-
             normalized.append({
                 "kind": part.get("kind", "text"),
                 "text": part.get("text", ""),
@@ -62,12 +66,11 @@ def normalize_parts(parts):
                 "file_url": part.get("file_url", None),
             })
         elif isinstance(part, list):
-            # Flatten nested lists recursively
             normalized.extend(normalize_parts(part))
     return normalized
 
 # -------------------------------
-# Serialize outgoing messages
+# Serialize outgoing messages to dict
 # -------------------------------
 def serialize_message(message: A2AMessage):
     return {
@@ -88,7 +91,7 @@ def serialize_message(message: A2AMessage):
     }
 
 # -------------------------------
-# Budget endpoint
+# Budget A2A endpoint
 # -------------------------------
 @app.post("/a2a/budget")
 async def a2a_endpoint(request: Request):
@@ -101,14 +104,13 @@ async def a2a_endpoint(request: Request):
         )
 
     # -------------------------------
-    # Normalize incoming messages
+    # Normalize incoming messages for Telex
     # -------------------------------
     try:
         if "params" in body:
             params = body["params"]
             if "message" in params and "messages" not in params:
                 params["messages"] = [params["message"]]
-
             if "messages" in params:
                 for msg in params["messages"]:
                     if "parts" in msg:
@@ -117,7 +119,7 @@ async def a2a_endpoint(request: Request):
         print("⚠️ Normalization warning:", e)
 
     # -------------------------------
-    # Validate JSON-RPC
+    # Validate JSON-RPC structure
     # -------------------------------
     try:
         rpc_request = JSONRPCRequest(**body)
@@ -141,23 +143,38 @@ async def a2a_endpoint(request: Request):
         print(f"🧭 Context ID: {context_id}")
         print(f"🪶 Messages: {messages}")
 
+        # -------------------------------
         # Process messages via BudgetAgent
-        result_obj = await budget_agent.process_messages(messages, context_id=context_id, task_id=task_id, config=config)
+        # -------------------------------
+        result_obj = await budget_agent.process_messages(
+            messages, context_id=context_id, task_id=task_id, config=config
+        )
 
+        # -------------------------------
+        # Build Telex-safe response
+        # -------------------------------
         task_uuid = task_id or str(uuid.uuid4())
         timestamp = datetime.now(timezone.utc).isoformat()
 
-        # Build Telex-safe response
         response_result = {
             "id": task_uuid,
             "contextId": context_id,
-            "status": {"state": "completed", "timestamp": timestamp, "message": serialize_message(result_obj.status.message)},
+            "status": {
+                "state": "completed",
+                "timestamp": timestamp,
+                "message": serialize_message(result_obj.status.message)
+            },
             "artifacts": [],
             "history": [serialize_message(m) for m in messages] + [serialize_message(result_obj.status.message)],
             "kind": "task",
         }
 
-        final_response = {"jsonrpc": "2.0", "id": rpc_id, "result": response_result, "error": None}
+        final_response = {
+            "jsonrpc": "2.0",
+            "id": rpc_id,
+            "result": response_result,
+            "error": None
+        }
 
         print("📤 Sending final Telex JSON-RPC response:")
         print(json.dumps(final_response, indent=2))
@@ -183,4 +200,5 @@ if __name__ == "__main__":
     import uvicorn
 
     port = int(os.getenv("PORT", 5004))
+    print(f"🚀 Starting UVicorn on port {port}...")
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
