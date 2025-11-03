@@ -2,6 +2,8 @@ from datetime import datetime, timedelta
 from uuid import uuid4
 from typing import Optional
 import httpx
+from html import unescape
+import re
 from session_store import SessionStore
 from models.a2a import A2AMessage, TaskResult, TaskStatus, MessagePart, MessageConfiguration
 
@@ -29,13 +31,11 @@ class BudgetAgent:
     # -------------------------------
     async def _get_or_create_user_id(self, context_id: str, message: A2AMessage) -> str:
         user_id = None
-        # Try extract from message metadata
         if hasattr(message, "sender") and getattr(message.sender, "id", None):
             user_id = str(message.sender.id)
         elif hasattr(message, "user") and getattr(message.user, "id", None):
             user_id = str(message.user.id)
 
-        # If not provided by Telex, check Redis
         if not user_id:
             user_id = await self.store.get_value(f"user:context:{context_id}")
             if user_id:
@@ -56,45 +56,40 @@ class BudgetAgent:
 
         context_id = context_id or str(uuid4())
         task_id = task_id or str(uuid4())
-
         message = messages[-1]
         user_id = await self._get_or_create_user_id(context_id, message)
         print(f"🧭 User identified as {user_id}")
 
-        # Parse text content
-        user_text = ""
+        # Combine all text parts
+        user_text_raw = ""
         for part in message.parts:
             if part.kind == "text" and part.text:
-                user_text = part.text.lower().strip()
-                break
+                user_text_raw += " " + part.text
 
-        # Default help text
-        response_text = (
-            "I didn’t understand that. Try:\n"
-            "- 'Add expense 500 groceries'\n"
-            "- 'Add income 2000 salary'\n"
-            "- 'Show summary'"
-        )
+        # Clean text: remove HTML tags, unescape, normalize spaces
+        user_text_clean = re.sub(r"<[^>]*>", " ", user_text_raw)
+        user_text_clean = unescape(user_text_clean)
+        user_text_clean = " ".join(user_text_clean.split()).lower()
+        print(f"📝 Cleaned user text: {user_text_clean}")
 
-        if "add expense" in user_text:
-            amount = self._extract_number(user_text)
-            if amount > 0:
-                await self._add_transaction(user_id, "expense", amount)
-                response_text = f"🧾 Added expense of ₦{amount}"
-            else:
-                response_text = "Could not detect amount. Try: 'Add expense 500 for gas'."
+        # Split commands by common separators (optional: could add ; or newline)
+        commands = user_text_clean.split("summary")  # crude split to handle multiple summaries
+        response_text = "I didn’t understand that. Try:\n- 'Add expense 500 groceries'\n- 'Add income 2000 salary'\n- 'Show summary'"
 
-        elif "add income" in user_text:
-            amount = self._extract_number(user_text)
-            if amount > 0:
-                await self._add_transaction(user_id, "income", amount)
-                response_text = f"💰 Added income of ₦{amount}"
-            else:
-                response_text = "Could not detect amount. Try: 'Add income 2000 salary'."
-
-        elif "summary" in user_text:
-            print("🟢 Detected 'summary' command, generating summary...")
-            response_text = await self._generate_weekly_summary(user_id)
+        for cmd in commands:
+            cmd = cmd.strip()
+            if "add expense" in cmd:
+                amount = self._extract_number(cmd)
+                if amount > 0:
+                    await self._add_transaction(user_id, "expense", amount)
+                    response_text = f"🧾 Added expense of ₦{amount}"
+            elif "add income" in cmd:
+                amount = self._extract_number(cmd)
+                if amount > 0:
+                    await self._add_transaction(user_id, "income", amount)
+                    response_text = f"💰 Added income of ₦{amount}"
+            elif cmd:  # if non-empty, treat as summary command
+                response_text = await self._generate_weekly_summary(user_id)
 
         # Build response message
         response_message = A2AMessage(
@@ -155,6 +150,5 @@ class BudgetAgent:
     # Extract numeric value from text
     # -------------------------------
     def _extract_number(self, text: str) -> int:
-        import re
         match = re.search(r'(\d+(?:\.\d+)?)', text.replace(",", ""))
         return int(float(match.group(1))) if match else 0
