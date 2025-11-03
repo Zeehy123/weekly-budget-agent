@@ -41,7 +41,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 5004
 Health check:
 curl http://localhost:5004/health
 # {"status": "healthy", "agent": "weekly_budget"}
-=================================================================================
+
 Usage
 Send JSON-RPC requests to /a2a/budget. Example:
 {
