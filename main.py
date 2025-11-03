@@ -144,3 +144,9 @@ async def a2a_endpoint(request: Request):
 @app.get("/health")
 async def health():
     return {"status": "healthy", "agent": "weekly_budget"}
+
+if __name__ == "__main__":
+    import uvicorn
+
+    port = int(os.getenv("PORT", 5004))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
