@@ -90,7 +90,7 @@ def serialize_message(message: A2AMessage):
 # -------------------------------
 # Budget endpoint
 # -------------------------------
-@app.post("/a2a/budget")
+@app.post("/a2a/agent")
 async def a2a_endpoint(request: Request):
     try:
         body = await request.json()
