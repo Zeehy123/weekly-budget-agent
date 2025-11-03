@@ -46,14 +46,20 @@ async def a2a_endpoint(request: Request):
     try:
         body = await request.json()
     except Exception as e:
-        return JSONResponse(status_code=400, content=create_error_response(None, A2AErrorCode.PARSE_ERROR, "Invalid JSON", {"detail": str(e)}))
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(None, A2AErrorCode.PARSE_ERROR, "Invalid JSON", {"detail": str(e)}),
+        )
 
     # Validate JSON-RPC shape
     try:
         rpc_request = JSONRPCRequest(**body)
     except Exception as e:
         print("❌ Request validation failed:", e)
-        return JSONResponse(status_code=400, content=create_error_response(body.get("id"), A2AErrorCode.INVALID_REQUEST, "Invalid Request", {"details": str(e)}))
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(body.get("id"), A2AErrorCode.INVALID_REQUEST, "Invalid Request", {"details": str(e)}),
+        )
 
     try:
         # Support both message/send and execute
@@ -61,20 +67,42 @@ async def a2a_endpoint(request: Request):
             params = rpc_request.params
             messages = [params.message]
             config = params.configuration
-            context_id = getattr(params.message, "metadata", None) and getattr(params.message.metadata, "get", lambda k, d=None: None)("contextId") or None
-            task_id = params.message.taskId or None
+
+            # ✅ FIX: Extract contextId from params, not metadata
+            context_id = (
+                getattr(params, "contextId", None)
+                or getattr(params.message, "contextId", None)
+                or (hasattr(params.message, "metadata") and getattr(params.message.metadata, "contextId", None))
+            )
+
+            task_id = getattr(params.message, "taskId", None)
         else:
             # execute
             params = rpc_request.params
             messages = params.messages
             config = None
-            context_id = params.contextId
-            task_id = params.taskId
+            context_id = getattr(params, "contextId", None)
+            task_id = getattr(params, "taskId", None)
+
+        # ✅ If still missing, create a default
+        if not context_id:
+            context_id = "default-context"
+            print("⚠️ No contextId provided, using default-context")
 
         # Pass messages into the agent
-        result: JSONRPCResponse = await budget_agent.process_messages(messages, context_id=context_id, task_id=task_id, config=config)
-        # result is TaskResult pydantic model from agent
+        result: JSONRPCResponse = await budget_agent.process_messages(
+            messages, context_id=context_id, task_id=task_id, config=config
+        )
+
         return JSONRPCResponse(id=rpc_request.id, result=result).model_dump()
+
+    except Exception as e:
+        print("🔥 Internal error:", e)
+        return JSONResponse(
+            status_code=500,
+            content=create_error_response(rpc_request.id, A2AErrorCode.INTERNAL_ERROR, "Internal error", {"detail": str(e)}),
+        )
+
 
     except Exception as e:
         print("❌ Internal error:", e)
