@@ -52,7 +52,7 @@ app = FastAPI(
 )
 
 
-# Flatten nested lists of parts
+# Recursive flatten for parts (any depth)
 def flatten_parts(parts):
     flat = []
     for part in parts:
@@ -60,10 +60,12 @@ def flatten_parts(parts):
             flat.extend(flatten_parts(part))
         elif isinstance(part, dict):
             flat.append(part)
+        else:
+            continue  # ignore invalid entries
     return flat
 
 
-# Convert any object to dict recursively
+# Recursively convert any object to dict
 def to_dict(obj):
     if hasattr(obj, "dict"):
         return obj.dict()
@@ -92,18 +94,15 @@ async def a2a_endpoint(request: Request):
         if "params" in body:
             params = body["params"]
 
-            # Flatten nested parts for all messages
+            # Convert single 'message' to 'messages' list
+            if "message" in params and "messages" not in params:
+                params["messages"] = [params["message"]]
+
+            # Flatten parts in all messages
             if "messages" in params:
                 for msg in params["messages"]:
                     if "parts" in msg and isinstance(msg["parts"], list):
                         msg["parts"] = flatten_parts(msg["parts"])
-
-            # Convert single 'message' to 'messages' list
-            if "message" in params and "messages" not in params:
-                msg = params["message"]
-                if "parts" in msg and isinstance(msg["parts"], list):
-                    msg["parts"] = flatten_parts(msg["parts"])
-                params["messages"] = [msg]
 
     except Exception as e:
         print("⚠️ Normalization warning:", e)
@@ -136,43 +135,42 @@ async def a2a_endpoint(request: Request):
         result_obj = await budget_agent.process_messages(messages, context_id=context_id, task_id=task_id, config=config)
 
         # Extract summary text safely
-        summary_text = None
+        summary_text = "Summary generated successfully."
         if hasattr(result_obj, "status") and hasattr(result_obj.status, "message"):
             message_obj = result_obj.status.message
             if hasattr(message_obj, "parts") and len(message_obj.parts) > 0:
-                summary_text = getattr(message_obj.parts[0], "text", None)
+                part = message_obj.parts[0]
+                summary_text = getattr(part, "text", summary_text)
         elif isinstance(result_obj, dict):
-            summary_text = result_obj.get("summary") or result_obj.get("message")
-        else:
-            summary_text = str(result_obj)
+            summary_text = result_obj.get("summary") or result_obj.get("message") or summary_text
 
-        summary_text = summary_text or "Summary generated successfully."
-
-        # Build JSON-RPC response and serialize all custom objects
+        # Build JSON-RPC response with full dict conversion
         task_uuid = task_id or str(uuid.uuid4())
         timestamp = datetime.now(timezone.utc).isoformat()
+
+        response_result = {
+            "id": task_uuid,
+            "contextId": context_id,
+            "status": {
+                "state": "completed",
+                "timestamp": timestamp,
+                "message": result_obj.status.message if hasattr(result_obj.status, "message") else {
+                    "messageId": str(uuid.uuid4()),
+                    "role": "agent",
+                    "parts": [{"kind": "text", "text": summary_text}],
+                    "kind": "message",
+                    "taskId": task_uuid,
+                },
+            },
+            "artifacts": [],
+            "history": messages + [result_obj.status.message],
+            "kind": "task",
+        }
 
         final_response = {
             "jsonrpc": "2.0",
             "id": rpc_id,
-            "result": to_dict({
-                "id": task_uuid,
-                "contextId": context_id,
-                "status": {
-                    "state": "completed",
-                    "timestamp": timestamp,
-                    "message": result_obj.status.message if hasattr(result_obj.status, "message") else {
-                        "messageId": str(uuid.uuid4()),
-                        "role": "agent",
-                        "parts": [{"kind": "text", "text": summary_text}],
-                        "kind": "message",
-                        "taskId": task_uuid,
-                    },
-                },
-                "artifacts": [],
-                "history": messages + [result_obj.status.message],
-                "kind": "task",
-            }),
+            "result": to_dict(response_result),
             "error": None,
         }
 
