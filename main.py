@@ -26,6 +26,7 @@ class A2AErrorCode(Enum):
 
 
 def create_error_response(request_id: str | None, code: A2AErrorCode, message: str, data=None):
+    """Standardized JSON-RPC error response."""
     return {
         "jsonrpc": "2.0",
         "id": request_id,
@@ -57,7 +58,7 @@ app = FastAPI(
 async def a2a_endpoint(request: Request):
     print("✅ /a2a/budget endpoint hit")
 
-    # Parse request body
+    # Parse incoming JSON
     try:
         body = await request.json()
     except Exception as e:
@@ -67,7 +68,7 @@ async def a2a_endpoint(request: Request):
             content=create_error_response(None, A2AErrorCode.PARSE_ERROR, "Invalid JSON", {"detail": str(e)}),
         )
 
-    # Validate JSON-RPC structure
+    # Validate JSON-RPC shape
     try:
         rpc_request = JSONRPCRequest(**body)
     except Exception as e:
@@ -82,7 +83,7 @@ async def a2a_endpoint(request: Request):
     rpc_id = body.get("id")
 
     try:
-        # Extract message, context and config
+        # Extract parameters
         if rpc_request.method == "message/send":
             params = rpc_request.params
             messages = [params.message]
@@ -99,6 +100,7 @@ async def a2a_endpoint(request: Request):
             )
             task_id = getattr(params.message, "taskId", None)
         else:
+            # fallback for execute method
             params = rpc_request.params
             messages = params.messages
             config = None
@@ -108,22 +110,28 @@ async def a2a_endpoint(request: Request):
         print(f"🧭 Context ID: {context_id}")
         print(f"🪶 Messages: {messages}")
 
-        # 🧩 Process via your BudgetAgent
+        # Process via BudgetAgent
         result_obj = await budget_agent.process_messages(
             messages, context_id=context_id, task_id=task_id, config=config
         )
 
-        # 🧠 Extract the actual summary text
-        # Your BudgetAgent returns either a dict, string, or JSONRPCResponse-like model
-        if isinstance(result_obj, dict):
-            summary_text = result_obj.get("summary") or json.dumps(result_obj, indent=2)
-        elif hasattr(result_obj, "result"):
-            summary_text = str(result_obj.result)
+        # 🔍 Extract actual message text from BudgetAgent output
+        summary_text = None
+        if hasattr(result_obj, "status") and hasattr(result_obj.status, "message"):
+            # If BudgetAgent returned a JSONRPCResponse-like object
+            message = result_obj.status.message
+            if message.parts and len(message.parts) > 0:
+                summary_text = getattr(message.parts[0], "text", None)
+        elif isinstance(result_obj, dict):
+            summary_text = result_obj.get("summary") or result_obj.get("message")
         else:
             summary_text = str(result_obj)
 
-        # Build Telex JSON-RPC response
-        task_uuid = str(uuid.uuid4())
+        if not summary_text:
+            summary_text = "Summary generated successfully."
+
+        # 🧱 Build proper Telex JSON-RPC response
+        task_uuid = task_id or str(uuid.uuid4())
         timestamp = datetime.now(timezone.utc).isoformat()
 
         final_response = {
@@ -139,7 +147,10 @@ async def a2a_endpoint(request: Request):
                         "messageId": str(uuid.uuid4()),
                         "role": "agent",
                         "parts": [
-                            {"kind": "text", "text": summary_text}
+                            {
+                                "kind": "text",
+                                "text": summary_text,
+                            }
                         ],
                         "kind": "message",
                         "taskId": task_uuid,
@@ -152,8 +163,9 @@ async def a2a_endpoint(request: Request):
             "error": None,
         }
 
-        print("📤 Sending Telex JSON-RPC response with real summary")
+        print("📤 Sending cleaned Telex JSON-RPC response:")
         print(json.dumps(final_response, indent=2))
+
         return JSONResponse(content=final_response)
 
     except Exception as e:
@@ -169,6 +181,7 @@ async def a2a_endpoint(request: Request):
 
 @app.get("/health")
 async def health():
+    """Health check endpoint."""
     return {"status": "healthy", "agent": "weekly_budget"}
 
 
