@@ -2,15 +2,20 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
-from models.a2a import JSONRPCRequest, JSONRPCResponse
+from models.a2a import JSONRPCRequest
 from agents.budget_agents import BudgetAgent
 from contextlib import asynccontextmanager
-import os
 from enum import Enum
+from datetime import datetime, timezone
+import uuid
+import os
+import traceback
+import json
 
 load_dotenv()
 
 budget_agent: BudgetAgent | None = None
+
 
 class A2AErrorCode(Enum):
     PARSE_ERROR = -32700
@@ -19,6 +24,7 @@ class A2AErrorCode(Enum):
     INVALID_PARAMS = -32602
     INTERNAL_ERROR = -32603
 
+
 def create_error_response(request_id: str | None, code: A2AErrorCode, message: str, data=None):
     return {
         "jsonrpc": "2.0",
@@ -26,9 +32,10 @@ def create_error_response(request_id: str | None, code: A2AErrorCode, message: s
         "error": {
             "code": code.value,
             "message": message,
-            "data": data or {}
-        }
+            "data": data or {},
+        },
     }
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -38,82 +45,136 @@ async def lifespan(app: FastAPI):
     yield
     print("🔌 Shutting down BudgetAgent")
 
-app = FastAPI(title="Weekly Budget Summary Agent", version="1.0.0", lifespan=lifespan)
+
+app = FastAPI(
+    title="Weekly Budget Summary Agent",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
 
 @app.post("/a2a/budget")
 async def a2a_endpoint(request: Request):
     print("✅ /a2a/budget endpoint hit")
+
+    # Parse request body
     try:
         body = await request.json()
     except Exception as e:
+        print("❌ JSON parse error:", e)
         return JSONResponse(
             status_code=400,
             content=create_error_response(None, A2AErrorCode.PARSE_ERROR, "Invalid JSON", {"detail": str(e)}),
         )
 
-    # Validate JSON-RPC shape
+    # Validate JSON-RPC structure
     try:
         rpc_request = JSONRPCRequest(**body)
     except Exception as e:
         print("❌ Request validation failed:", e)
         return JSONResponse(
             status_code=400,
-            content=create_error_response(body.get("id"), A2AErrorCode.INVALID_REQUEST, "Invalid Request", {"details": str(e)}),
+            content=create_error_response(
+                body.get("id"), A2AErrorCode.INVALID_REQUEST, "Invalid Request", {"details": str(e)}
+            ),
         )
 
+    rpc_id = body.get("id")
+
     try:
-        # Support both message/send and execute
+        # Extract message, context and config
         if rpc_request.method == "message/send":
             params = rpc_request.params
             messages = [params.message]
             config = params.configuration
 
-            # ✅ FIX: Extract contextId from params, not metadata
             context_id = (
                 getattr(params, "contextId", None)
                 or getattr(params.message, "contextId", None)
-                or (hasattr(params.message, "metadata") and getattr(params.message.metadata, "contextId", None))
+                or (
+                    hasattr(params.message, "metadata")
+                    and getattr(params.message.metadata, "contextId", None)
+                )
+                or "default-context"
             )
-
             task_id = getattr(params.message, "taskId", None)
         else:
-            # execute
             params = rpc_request.params
             messages = params.messages
             config = None
-            context_id = getattr(params, "contextId", None)
+            context_id = getattr(params, "contextId", "default-context")
             task_id = getattr(params, "taskId", None)
 
-        # ✅ If still missing, create a default
-        if not context_id:
-            context_id = "default-context"
-            print("⚠️ No contextId provided, using default-context")
+        print(f"🧭 Context ID: {context_id}")
+        print(f"🪶 Messages: {messages}")
 
-        # Pass messages into the agent
-        result: JSONRPCResponse = await budget_agent.process_messages(
+        # 🧩 Process via your BudgetAgent
+        result_obj = await budget_agent.process_messages(
             messages, context_id=context_id, task_id=task_id, config=config
         )
 
-        return JSONRPCResponse(id=rpc_request.id, result=result).model_dump()
+        # 🧠 Extract the actual summary text
+        # Your BudgetAgent returns either a dict, string, or JSONRPCResponse-like model
+        if isinstance(result_obj, dict):
+            summary_text = result_obj.get("summary") or json.dumps(result_obj, indent=2)
+        elif hasattr(result_obj, "result"):
+            summary_text = str(result_obj.result)
+        else:
+            summary_text = str(result_obj)
+
+        # Build Telex JSON-RPC response
+        task_uuid = str(uuid.uuid4())
+        timestamp = datetime.now(timezone.utc).isoformat()
+
+        final_response = {
+            "jsonrpc": "2.0",
+            "id": rpc_id,
+            "result": {
+                "id": task_uuid,
+                "contextId": context_id,
+                "status": {
+                    "state": "completed",
+                    "timestamp": timestamp,
+                    "message": {
+                        "messageId": str(uuid.uuid4()),
+                        "role": "agent",
+                        "parts": [
+                            {"kind": "text", "text": summary_text}
+                        ],
+                        "kind": "message",
+                        "taskId": task_uuid,
+                    },
+                },
+                "artifacts": [],
+                "history": [],
+                "kind": "task",
+            },
+            "error": None,
+        }
+
+        print("📤 Sending Telex JSON-RPC response with real summary")
+        print(json.dumps(final_response, indent=2))
+        return JSONResponse(content=final_response)
 
     except Exception as e:
-        print("🔥 Internal error:", e)
+        print("🔥 Internal error while processing:", e)
+        traceback.print_exc()
         return JSONResponse(
             status_code=500,
-            content=create_error_response(rpc_request.id, A2AErrorCode.INTERNAL_ERROR, "Internal error", {"detail": str(e)}),
+            content=create_error_response(
+                rpc_id, A2AErrorCode.INTERNAL_ERROR, "Internal error", {"detail": str(e)}
+            ),
         )
 
-
-    except Exception as e:
-        print("❌ Internal error:", e)
-        return JSONResponse(status_code=500, content=create_error_response(rpc_request.id, A2AErrorCode.INTERNAL_ERROR, "Internal error", {"detail": str(e)}))
 
 @app.get("/health")
 async def health():
     return {"status": "healthy", "agent": "weekly_budget"}
 
+
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 5001))
-    print(f"Starting UVicorn on port {port}...")
+
+    port = int(os.getenv("PORT", 5004))
+    print(f"🚀 Starting UVicorn on port {port}...")
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
