@@ -52,11 +52,33 @@ app = FastAPI(
 )
 
 
+# Flatten nested lists of parts
+def flatten_parts(parts):
+    flat = []
+    for part in parts:
+        if isinstance(part, list):
+            flat.extend(flatten_parts(part))
+        elif isinstance(part, dict):
+            flat.append(part)
+    return flat
+
+
+# Convert any object to dict recursively
+def to_dict(obj):
+    if hasattr(obj, "dict"):
+        return obj.dict()
+    elif isinstance(obj, list):
+        return [to_dict(i) for i in obj]
+    elif isinstance(obj, dict):
+        return {k: to_dict(v) for k, v in obj.items()}
+    else:
+        return obj
+
+
 @app.post("/a2a/budget")
 async def a2a_endpoint(request: Request):
     print("✅ /a2a/budget endpoint hit")
 
-    # Parse incoming JSON
     try:
         body = await request.json()
     except Exception as e:
@@ -65,22 +87,23 @@ async def a2a_endpoint(request: Request):
             content=create_error_response(None, A2AErrorCode.PARSE_ERROR, "Invalid JSON", {"detail": str(e)}),
         )
 
-    # Normalize Telex input
+    # Normalize input
     try:
         if "params" in body:
             params = body["params"]
 
-            # Flatten nested parts
+            # Flatten nested parts for all messages
             if "messages" in params:
                 for msg in params["messages"]:
                     if "parts" in msg and isinstance(msg["parts"], list):
-                        for i, part in enumerate(msg["parts"]):
-                            if isinstance(part, list) and len(part) == 1 and isinstance(part[0], dict):
-                                msg["parts"][i] = part[0]
+                        msg["parts"] = flatten_parts(msg["parts"])
 
             # Convert single 'message' to 'messages' list
             if "message" in params and "messages" not in params:
-                params["messages"] = [params["message"]]
+                msg = params["message"]
+                if "parts" in msg and isinstance(msg["parts"], list):
+                    msg["parts"] = flatten_parts(msg["parts"])
+                params["messages"] = [msg]
 
     except Exception as e:
         print("⚠️ Normalization warning:", e)
@@ -112,12 +135,12 @@ async def a2a_endpoint(request: Request):
         # Process via BudgetAgent
         result_obj = await budget_agent.process_messages(messages, context_id=context_id, task_id=task_id, config=config)
 
-        # Extract summary text
+        # Extract summary text safely
         summary_text = None
         if hasattr(result_obj, "status") and hasattr(result_obj.status, "message"):
-            message = result_obj.status.message
-            if message.parts and len(message.parts) > 0:
-                summary_text = getattr(message.parts[0], "text", None)
+            message_obj = result_obj.status.message
+            if hasattr(message_obj, "parts") and len(message_obj.parts) > 0:
+                summary_text = getattr(message_obj.parts[0], "text", None)
         elif isinstance(result_obj, dict):
             summary_text = result_obj.get("summary") or result_obj.get("message")
         else:
@@ -125,20 +148,20 @@ async def a2a_endpoint(request: Request):
 
         summary_text = summary_text or "Summary generated successfully."
 
-        # Build JSON-RPC response
+        # Build JSON-RPC response and serialize all custom objects
         task_uuid = task_id or str(uuid.uuid4())
         timestamp = datetime.now(timezone.utc).isoformat()
 
         final_response = {
             "jsonrpc": "2.0",
             "id": rpc_id,
-            "result": {
+            "result": to_dict({
                 "id": task_uuid,
                 "contextId": context_id,
                 "status": {
                     "state": "completed",
                     "timestamp": timestamp,
-                    "message": {
+                    "message": result_obj.status.message if hasattr(result_obj.status, "message") else {
                         "messageId": str(uuid.uuid4()),
                         "role": "agent",
                         "parts": [{"kind": "text", "text": summary_text}],
@@ -149,7 +172,7 @@ async def a2a_endpoint(request: Request):
                 "artifacts": [],
                 "history": messages + [result_obj.status.message],
                 "kind": "task",
-            },
+            }),
             "error": None,
         }
 
